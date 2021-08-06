@@ -1,0 +1,130 @@
+import sqlite3
+import asyncio
+import hashlib
+
+
+def xstr(s):
+    if s is None:
+        return ''
+    else:
+        return str(s)
+
+
+class SQLighter:
+
+    def __init__(self, database_file):
+        self.connection = sqlite3.connect(database_file)
+        self.cursor = self.connection.cursor()
+
+# Возвращает всех подписчиков с активным статусом
+    def get_subscribtions(self, status=True):
+        with self.connection:
+            query = """SELECT FROM 'users' WHERE status = ?"""
+            return self.cursor.execute(query, (status,)).fetchall()
+
+# Добавляет нового пользователя
+    def add_subscriber(self, user_id, full_name, status=True):
+        with self.connection:
+            query_check = f"""SELECT * FROM 'users' WHERE user_id = ?"""
+            query = """INSERT INTO 'users' (user_id, status, full_name) VALUES (?,?,?)"""
+            if not len(self.cursor.execute(query_check, (user_id,)).fetchall()):
+                return self.cursor.execute(query, (user_id, status, full_name))
+
+    def update_subscription(self, user_id, status):
+        with self.connection:
+            query = f"""UPDATE 'users' SET status = {status} WHERE user_id = {user_id}"""
+            return self.cursor.execute(query)
+
+    def add_sub_db(self, user_id, name, voice=None, last_ep=False):
+        with self.connection:
+            query_check = f"""
+            SELECT * FROM 'subscriptions'
+            WHERE user_id = ? and name_serial = ?"""
+            query = f"""INSERT INTO 'subscriptions' (user_id, name_serial) values (?, ?)"""
+            if (not len(self.cursor.execute(query_check, (user_id, name)).fetchall())):
+                return self.cursor.execute(query, (user_id, name))
+
+    def check_subs(self, name, voice, episode, season, link):
+        with self.connection:
+            send = dict()
+            query = """SELECT user_id FROM 'subscriptions' 
+            WHERE name_serial = ?"""
+            users = self.cursor.execute(query, (name,)).fetchall()
+            message = f"Обновление в сериале:\n{name}\n{link}\n\n"
+            for user in users:
+                send[user[0]] = message
+            return send
+
+    def add_films_db(self, films):
+        with self.connection:
+            messages = dict()
+            query_hash = """select str_hash from 'serials'"""
+            all_hash = self.cursor.execute(query_hash).fetchall()
+            all_hash = {val[0] for val in all_hash}
+            hash_new_films = set(films) - all_hash
+            for str_hash in hash_new_films:
+                film = films[str_hash]
+                query = f"""INSERT INTO 'serials'
+                (name, voice, episode, season, link, str_hash) values (?,?,?,?,?,?)"""
+                name = film['name']
+                voice = film['voice']
+                episode = film['episode']
+                season = film['season']
+                link = film['link']
+                self.cursor.execute(query, (name, voice, episode, season, link, str_hash))
+                send = self.check_subs(name, voice, episode, season, link)
+                for user_id, message in send.items():
+                    if not messages.get(user_id):
+                        messages[user_id] = message
+                    else:
+                        messages[user_id] += message
+            return messages
+
+    def get_subs_user(self, user_id):
+        # получаем все подписки [{id,name,voice,season,episode},]
+        with self.connection:
+            query = """SELECT id,name_serial,voice,season,episode FROM 'subscriptions' 
+            WHERE user_id = ?"""
+            data = self.cursor.execute(query, (user_id,)).fetchall()
+            subs = []
+            for sub in data:
+                subs.append({'id': sub[0],
+                             'name': sub[1],
+                             'voice': sub[2],
+                             'season': sub[3],
+                             'episode': sub[4]})
+        return subs
+
+    def del_sub_all(self, user_id):
+        with self.connection:
+            query = """delete from 'subscriptions' where user_id = ?"""
+            self.cursor.execute(query, (user_id,))
+
+    def get_sub(self, id):
+        """
+        возвращаем подписку по id -> {name_serial, voice, season, episode}
+        """
+        with self.connection:
+            query = """select name_serial, voice, season, episode from 'subscriptions'
+            where id = ?"""
+
+            return self.cursor.execute(query, (id,)).fetchall()[0]
+
+    def del_sub_one(self, id):
+    #     delete subscription
+        with self.connection:
+            query = """delete from 'subscriptions' where id = ?"""
+            self.cursor.execute(query, (id,))
+
+    def close(self):
+        self.connection.close()
+
+
+
+if __name__ == "__main__":
+    conn = sqlite3.connect('Serials.db')
+    with conn:
+        query = """select * from 'serials' where voice = ? and name = ?"""
+        cur = conn.cursor()
+        data = cur.execute(query, (None, 'След')).fetchall()
+        print(data)
