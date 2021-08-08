@@ -51,8 +51,8 @@ def get_keyboard_type(voices: int):
         km.insert(IKB(str(number), callback_data=callback_data))
     km.add(IKB("Все изменения",
                callback_data=make_menu_cd(func="type", cd_type=0)))
-    km.add(IKB("Последняя серия",
-               callback_data=make_menu_cd(func="type", cd_type=2)))
+    # km.add(IKB("Последняя серия",
+    #            callback_data=make_menu_cd(func="type", cd_type=2)))
     km.add(IKB(text='Найти другой',
                callback_data=make_menu_cd(func="search")))
     km.insert(IKB(text='Главная',
@@ -90,12 +90,12 @@ def get_keyboard_subs(subs: list):
     return km
 
 
-def get_keyboard_sub():
+def get_keyboard_sub(sub_id):
     km = IKM()
     km.add(IKB(text='Изменить',
-               callback_data=make_menu_cd(func="select")))
+               callback_data=make_menu_cd(func="select", sub_id=sub_id)))
     km.insert(IKB(text='Удалить',
-                  callback_data=make_menu_cd(func="del_one")))
+                  callback_data=make_menu_cd(func="del_one", sub_id=sub_id)))
     km.add(IKB(text='Назад',
                callback_data=make_menu_cd(func="show_subs")))
     km.insert(IKB(text='Главная',

@@ -1,44 +1,56 @@
-from utils.db_api.models import User, Subscriptions, Serials, Donats
-from utils.db_api.database import db
-from utils.parser.rezka_parser import update_new_serials
+import copy
+import time
 
+from utils.db_api.models import s
+from utils.db_api.models import User, Subscriptions, Serials
 
-def rows2dict_in_list(rows) -> list:
-    rows_list = list()
-    for row in rows:
-        d = dict()
-        for column in row.__table__.columns:
-            d[column] = getattr(row, column.name)
-        rows_list.append(d)
-    # if len(rows_list):
-    #     return rows_list
-    # for row in rows:
-    #     d = dict()
-    #     for name, value in row.items():
-    #         d[name] = value
-    #     rows_list.append(d)
-    # if len(rows_list):
-    print(rows_list)
-    return rows_list
+import asyncio
+import aiohttp
+import sqlalchemy
+
+from aiogram import types
+from bs4 import BeautifulSoup
+from utils.parser.rezka_parser import update_new_serials, search_serial, search_by_link
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, or_
+
 
 
 def rows2list(rows) -> list:
     """ Принимает и отдает значения только одного столбца"""
     rows_list = list()
+    if rows:
+        for row in rows:
+            rows_list.append(row[0])
+    return rows_list
+
+
+def row2dict(row) -> dict:
+    """принимает объект строки, отдаёт словарь {column_name: value,...}"""
+    d = dict()
+    for column in row.__table__.columns:
+        d[column.name] = getattr(row, column.name)
+    return d
+
+
+def rows2dict_in_list(rows) -> list:
+    """Принимает список объектов строк
+    Возвращает список словарей [{columnName: value, ...}, {...},...]"""
+    rows_list = list()
     for row in rows:
-        rows_list.append(row[0])
+        rows_list.append(row2dict(row))
     return rows_list
 
 
 # Обработка users
-async def get_user(user_id: int) -> User:
-    user = await User.query.where(User.user_id == user_id).gino.first()
+def get_user(user_id: int) -> User:
+    """Возвращает объект User по user_id"""
+    user = s.query(User).filter(User.user_id == user_id).first()
     return user
 
 
-async def add_new_user(user, status_sub=1, notification=True) -> User:
-    # user = types.User.get_current()
-    old_user = await get_user(user.id)
+def add_new_user(user: types.User.get_current(), status_sub=1, notification=True) -> User:
+    old_user = get_user(user.id)
     if old_user:
         return old_user
     new_user = User()
@@ -47,47 +59,97 @@ async def add_new_user(user, status_sub=1, notification=True) -> User:
     new_user.fullname = user.full_name
     new_user.notification = notification
     new_user.status_sub = status_sub
-    print(
-        new_user.user_id,
-        new_user.username,
-        new_user.fullname,
-        new_user.notification,
-        new_user.status_sub, sep="\n"
-    )
-    await new_user.create()
+    s.add(new_user)
+    s.commit()
     return new_user
 
 
 # Обновление статуса пользователя
-async def update_status(user_id, status_sub):
-    user = await get_user(user_id)
-    await user.update(status_sub=status_sub).apply()
+def update_status(user_id, status_sub):
+    user = get_user(user_id)
+    user.status_sub = status_sub
+    s.commit()
 
 
 # Обновление статуса уведомлений
-async def change_notification(user_id, notification):
-    user = await get_user(user_id)
-    await user.update(notification=notification).apply()
+def change_notification(user_id, notification):
+    user = get_user(user_id)
+    user.notification = notification
+    s.commit()
 
 
 # Обработка serials
-async def update_serials(serials) -> list:
+def update_serials(serials) -> list:
     """Принимает сериалы с главной страницы, получаем хеш из БД
     сравниваем и получаем новые сериалы, записываем их в БД
     Возвращаем новые сериалы
     """
-
-    str_hash_db = await Serials.select("str_hash").gino.all()
-    print(f"В БД сейчас фильмов: {len(str_hash_db)}")
-    str_hash_db = rows2list(str_hash_db)
+    str_hash_db = rows2list(s.query(Serials.str_hash).all())
     new_serials = update_new_serials(serials, str_hash_db)
-    print(f"найдено {len(new_serials)} новых сериалов.")
     if len(new_serials):
-        for serial in new_serials:
-            print(serial)
-    if len(new_serials):
-        await Serials.insert().gino.all(new_serials)
+        serials4db = copy.deepcopy(new_serials)
+        for serial in serials4db:
+            del serial["data_site"]
+        serials4db = [(Serials(**serial)) for serial in serials4db]
+        s.add_all(serials4db)
+        s.commit()
         return new_serials
+
+
+async def compar_all(sub, new_serials: list, session, s):
+    user_id = sub["user_id"]
+    message = str()
+    for serial in new_serials:
+        if serial["link"] == sub["link"]:
+            message += f"Обновление в сериале {sub['name_serial']}\n{serial['data_site']}\n\n"
+    if len(message):
+        return {"user_id": user_id, "message": message}
+
+
+async def compar_voice(sub, new_serials, session, s: sqlalchemy.orm.Session):
+    user_id = sub["user_id"]
+    message = str()
+    for serial in new_serials:
+        if serial["link"] == sub["link"]:
+            url = sub["link"] + f"#t:{sub['voice_id']}-s:1-e:1"
+            async with session.get(url=url, cookie={"1": "1"}) as r:
+                html = await r.text()
+                soup = BeautifulSoup(html, 'lxml')
+                last = soup.findAll("li", {"class": "b-simple_episode__item"})[-1]
+                last_episode = last["data-episode_id"]
+                last_season = last["data-season_id"]
+                if last_season > sub["last_season"] or \
+                        last_episode > sub['last_episode']:
+                    message += f"Обновление в сериале {sub['name_serial']}\nОзвучка: {sub.voice_name}\n" \
+                               f"Сезон: {last_season}, серия: {last_episode}.\n\n"
+                    sub['last_episode'] = last_episode
+                    sub['last_season'] = last_season
+                    s.commit()
+
+    if len(message):
+        return {"user_id": user_id, "message": message}
+
+
+async def compar_last_ep(sub, new_serials, session, s: sqlalchemy.orm.Session):
+    # TODO: функция не реализована. Неправильная логика
+    #  Сделать подписку по последней серии.
+    user_id = sub['user_id']
+    message = str()
+    for serial in new_serials:
+        if sub['name_serial'] == serial["name_serial"]:
+            serial = await search_by_link(serial, session)
+            if serial["last_season"] > sub['last_season'] or \
+                    serial["last_episode"] > sub['last_episode']:
+                sub['last_season'] = serial["last_season"]
+                sub['last_episode'] = serial["last_episode"]
+                sub['voice_name'] = serial['last_voice']
+            elif serial['last_voice'] != sub['voice_name']:
+                sub['voice_name'] = serial["last_voice"]
+            s.commit()
+            message += f"Обновление в сериале {sub['name_serial']}\nОзвучка: {sub['voice_name']}\n" \
+                       f"Сезон: {sub['last_season']}, серия: {sub['last_episode']}.\n\n"
+    if len(message):
+        return {"user_id": user_id, "message": message}
 
 
 # возвращает словарь key=user_id, value=message
@@ -96,99 +158,75 @@ async def check_subs(new_serials: list) -> dict:
     срвавнивает с подписками, перезаписывает последнюю серию
     возвращает словарь key=user_id, value=message"""
     messages = dict()
-    for serial in new_serials:
-        subs = await Subscriptions.query.where(
-            Subscriptions.name_serial == serial["name_serial"]
-        ).gino.all()
-        print("подписки из вышедших", subs)
-        # TODO: Перевести в список словарей значения из таблицы
+    subs = s.query(Subscriptions).\
+        filter(or_(Subscriptions.link == serial["link"] for serial in new_serials)).all()
+    subs = rows2dict_in_list(subs)
+    # TODO: Сделать быстрее???
+    tasks = []
+    sub_filter = {
+        0: compar_all,
+        1: compar_voice,
+        2: compar_last_ep
+    }
+    async with aiohttp.ClientSession() as session:
         for sub in subs:
-            message = str()
-            user_id = sub[1]
-            message += f"Обновление в сериале {sub[2]}\n" \
-                       f"Озвучка: {sub[4]}\n" \
-                       f"Сезон {sub[5]}. Серия {sub[6]}\n\n"
-            sub_filter = {
-                0: "Фильтр: все уведомления\n"+message,
-                1: "Фильтр: по озвучке\n"+message,
-                2: "Фильтр: послдняя серия\n"+message
-            }
-            # все уведомления:
-            message += sub_filter[0] if sub[3] == 0 else ''
-            if sub[3] == 1 and sub[4] == serial["voice"]:
-                # озвучка
-                message += sub_filter[1]
-
-            elif sub[5] > serial["season"] or (sub[5] == serial["season"] and sub[6]>serial["episode"]):
-                # Последняя серия
-                await update_sub_last_serials(sub[0], sub[6], sub[5])
-                message += sub_filter[2]
-            if messages.get(user_id, None):
-                messages[user_id] += message
-            else:
-                messages[user_id] = message
+            current_func = sub_filter[sub["type"]]
+            task = asyncio.create_task(current_func(sub, new_serials, session, s))
+            tasks.append(task)
+        messages_data = await asyncio.gather(*tasks)
+    for message_data in messages_data:
+        user_id = message_data["user_id"]
+        message = message_data["message"]
+        if messages.get(user_id):
+            messages[user_id] += message
+        else:
+            messages[user_id] = message
     return messages
 
 
 # Обработка subscriptions
 # Добавляем подписку
-async def add_subscription(serial: dict):
+def add_subscription(serial: dict):
     sub_id = serial.pop("id", None)
     if sub_id:
-        await Subscriptions.update(serial).where(Subscriptions.id == sub_id)
+        sub = get_sub(sub_id)
+        sub.update(sub, **serial)
     else:
-        await Subscriptions.insert().gino.all(serial)
-
-
-# Записывает последнюю вышедшую серию в подписку юзера с заданным id
-async def update_sub_last_serials(sub_id, episode, season=None):
-    if season:
-        await Subscriptions.update(season=season,
-                                   episode=episode
-                                   ).where(Subscriptions.id == sub_id).apply()
+        sub = Subscriptions()
+        sub.update(sub, **serial)
+        s.add(sub)
+    s.commit()
 
 
 # Получаем подписку по id
-async def get_sub(sub_id) -> list:
-    sub = Subscriptions.query.where(Subscriptions.id == sub_id).gino.first()
-    sub = rows2dict_in_list(sub)
+def get_sub(sub_id):
+    sub = s.query(Subscriptions).filter(Subscriptions.id == sub_id).first()
     return sub
 
 
 # Получаем подписки по user_id
-async def get_subs_user(user_id) -> list:
-    # subs_user = await Subscriptions.query.where(
-    #     Subscriptions.user_id == user_id
-    # ).gino.all()
-    # subs_user = await Subscriptions.query.where(
-    #     Subscriptions.user_id == user_id
-    # ).first()
-    subs_user = []
-    user = await User.query.where(User.user_id == user_id)
-    user = user.gino.first().to_dict()
-    print(type(user))
-    print(user)
-    print(type(subs_user))
-    print(list(subs_user))
-    for sub in subs_user:
-        print(type(sub))
-        print(sub)
-        for f in sub:
-            print(f, sep="  ")
-        print()
-    print(subs_user)
+def get_subs_user(user_id) -> list:
+    subs_user = s.query(Subscriptions).filter(Subscriptions.user_id == user_id).all()
     subs_user = rows2dict_in_list(subs_user)
-    # if subs_user:
     return subs_user
 
 
-async def del_subs(user_id):
-    await Subscriptions.delete.where(
-        Subscriptions.user_id == user_id).gino.status()
+# Удалить все подписки пользователя
+def del_subs(user_id):
+    try:
+        s.query(Subscriptions).filter(Subscriptions.user_id == user_id).delete(synchronize_session=False)
+        s.commit()
+        return True
+    except:
+        return False
 
 
 async def del_sub(sub_id):
-    await Subscriptions.delete.where(
-        Subscriptions.id == sub_id).gino.status()
+    try:
+        s.query(Subscriptions).filter(Subscriptions.id == sub_id).delete(synchronize_session=False)
+        s.commit()
+        return True
+    except:
+        return False
 
 # TODO: сделать обработку донатов

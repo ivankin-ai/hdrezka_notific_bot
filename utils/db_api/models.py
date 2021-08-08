@@ -1,13 +1,22 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Sequence, Boolean, TIMESTAMP
-from sqlalchemy import sql
-from utils.db_api.database import db
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, TIMESTAMP, create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+from data.config import db_user, db_pass, host, db_name
+
+Session = sessionmaker()
+engine = create_engine(f'postgresql://{db_user}:{db_pass}@{host}/{db_name}', echo=True)
+print(f'postgresql://{db_user}:{db_pass}@{host}/{db_name}')
+Base = declarative_base(bind=engine)
+
+Session.configure(bind=engine)
+s = Session()  # type: sqlalchemy.orm.Session
 
 
-class User(db.Model):
+class User(Base):
     __tablename__ = 'users'
-    query: sql.Select
 
-    id = Column(Integer, Sequence("user_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger)
     username = Column(String(200))
     fullname = Column(String(200))
@@ -19,45 +28,66 @@ class User(db.Model):
     # ????: Friends
     status_sub = Column(Integer, default='1')
 
+    def update(self, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
-class Serials(db.Model):
+
+class Serials(Base):
     __tablename__ = 'serials'
-    # query: sql.Select
 
-    id = Column(Integer, Sequence("user_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     name_serial = Column(String(100))
-    voice = Column(String(50))
-    season = Column(Integer)
-    episode = Column(Integer)
-    link = Column(String(200))
-    str_hash = Column(String(32))
+    link = Column(String)
+    str_hash = Column(String)
+
+    def update(self, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
-class Subscriptions(db.Model):
+class Subscriptions(Base):
     __tablename__ = 'subscriptions'
-    query: sql.Select
 
-    id = Column(Integer, Sequence("user_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger)
     name_serial = Column(String(100))
-    info = Column(String(100))
     type = Column(Integer, default="0")
     # 0: Уведомления обо всех обновлениях по сериалу
     # 1: Уведомления о выходе определённой озвучки
     # 2: Уведомление о последней вышедшей серии
-    voice = Column(String(50))
-    season = Column(Integer)
-    episode = Column(Integer)
+    voice_id = Column(Integer)
+    voice_name = Column(String)
+    last_season = Column(Integer)
+    last_episode = Column(Integer)
+    # voices_data = Column(JSON) #####??????????????????
+    info = Column(String(100))
     link = Column(String(200))
 
+    def update(self, sub, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(sub, key):
+                setattr(sub, key, value)
 
-class Donats(db.Model):
+
+class Donats(Base):
     __tablename__ = 'donats'
-    query: sql.Select
 
-    id = Column(Integer, Sequence("user_id_seq"), primary_key=True)
+    id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger)
     donat_time = Column(TIMESTAMP)
     amount = Column(Integer)
     email = Column(String(200))
     successful = Column(Boolean, default=False)
+
+    def update(self, **kwargs):
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+
+# Base.metadata.drop_all(engine)
+# Base.metadata.create_all(engine)
+print("DB created")

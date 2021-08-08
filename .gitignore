@@ -129,3 +129,5 @@ dmypy.json
 .pyre/
 .idea/*
 .env
+/my_test.py
+/test_json.json

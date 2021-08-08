@@ -1,15 +1,33 @@
+import asyncio
+
 import aiohttp
 from bs4 import BeautifulSoup
 import requests
 import hashlib
 from data.config import URL
 
+"""
+li class:b-translator__item  озвучки -> data-translator_id = id 
+
+ui class: b-simple_seasons__list clearfix -> блок с li (количество сезонов) data-tab_id
+ui class: b-simple_episodes__list clearfix -> блок с li (количество эпизодов) data-episode_id
+
+Со страницы сериала мы берём только озвучки, если они есть, если нет, то ничего не берём. 
+и предлагаем подписаться на все обновления.
+"Подписаться на все обновления? В том числе мы уведомим Вас, если выйдет новая озвучка"
+
+
+
+страница поиска:
+span class: cat series его родитель a href=link
+
+"""
+
 
 def check_site() -> list:
     """
     Заходит на главную страницу, парсит вышедшие сериалы
-    возвращает список словарей [{имя, сезон, эпизод, озвучка, ссылка}]
-    Должно быть [{name_serial, voice, season, episode, link, str_hash}]
+    возвращает список словарей [{name_serial, data_site, link, str_hash}]
     """
     ssn = requests.Session()
     r = ssn.get('https://www.2ivi.com/')
@@ -48,15 +66,14 @@ def check_site() -> list:
                 voice = episode_elem.contents[1].text[1:-1]
             else:
                 voice = None
-
+            voice = f'Озвучка {voice}, ' if voice else ''
+            data_site = voice + f"сезон {season}, серия {episode}"
             str_hash = hashlib.md5(
-                (str(name_serial)+str(voice)+str(episode)+str(season)).encode()
+                (data_site + str(link)).encode()
             ).hexdigest()
             days_list.append({'name_serial': name_serial,
-                              'season': season,
-                              'episode': episode,
-                              'voice': voice,
                               'link': URL + link,
+                              'data_site': data_site,
                               'str_hash': str_hash})
     return days_list
 
@@ -77,89 +94,97 @@ def update_new_serials(serials_site, db_str_hash: list):
     return new_serials_list
 
 
-async def check_voices(link, voices_id, session):
-    """Заходим на страницу сериала и забираем soup с каждой озвучки"""
-    # async with aiohttp.ClientSession() as session:
-    cookies = {"1": "1"}
-    soup_voices = []
-    for voice_id in voices_id:
-        link_voice = link + f"#t:{voice_id}-s:1-e:1"
-        async with session.get(url=link_voice, cookies=cookies) as r:
+async def search_serial(name=None, serials=None):
+    if serials is list:
+        cookies = {"1": '1'}
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            tasks = []
+            for serial in serials:
+                task = asyncio.create_task(search_by_link(serial, session))
+                tasks.append(task)
+            serials = await asyncio.gather(*tasks)
+    elif serials:
+        cookies = {"1": '1'}
+        async with aiohttp.ClientSession(cookies=cookies) as session:
+            serials = await search_by_link(serials, session)
+    elif name:
+        serials = await search_by_name(name)
+        # serials = await search_serial(serials=serials)
+    return serials
+
+
+async def search_by_link(serial: dict, session=None) -> dict:
+    """Принимает один сериал в виде словаря.
+    Обязательные занчения # {link, name_serial, info}
+    добавляет словарь voices если он есть и last_e last_s """
+    flag = False
+    if not session:
+        flag = True
+        session = aiohttp.ClientSession()
+    cookies = {"1": '1'}
+    async with session.get(url=serial["link"], cookies=cookies) as r:
+        html = await r.text()
+        soup = BeautifulSoup(html, 'lxml')
+        voices_data = soup.findAll("li", {"class": "b-translator__item"})
+        voices = []
+        for voice in voices_data:
+            text = voice.find("img")
+            if text:
+                text = text["title"]
+                voices.append({"title": voice.text + text, "voice_id": voice["data-translator_id"]})
+            else:
+                voices.append({"title": voice.text, "voice_id": voice["data-translator_id"]})
+        last = soup.findAll("li", {"class": "b-simple_episode__item"})[-1]
+        last_episode = last["data-episode_id"]
+        last_season = last["data-season_id"]
+        if len(voices):
+            voices = await check_voices(serial["link"], voices, session)
+            # voices = [{title, voice_id, le,ls}]
+            for voice in voices:
+                if last_season < voice["last_season"]:
+                    continue
+                elif last_season == voice["last_season"]:
+                    if last_episode < voice["last_episode"]:
+                        continue
+                    else:
+                        last_episode = voice["last_episode"]
+                else:
+                    last_season = voice["last_season"]
+                    last_episode = voice["last_episode"]
+        if flag:
+            await session.close()
+        return {"name_serial": serial["name_serial"],
+                # "last_season": last_season,
+                # "last_episode": last_episode,
+                "voices": voices,  # Здесь они нужны, что бы выбрать озвучку
+                "info": serial["info"],
+                "link": serial["link"]}
+
+
+async def check_voices(link, voices, session):
+    """Заходим на страницу сериала и возвращаем последние серии всех озвучек"""
+
+    async def check(link_voice, voice):
+        async with session.get(url=link_voice) as r:
             html = await r.text()
             soup = BeautifulSoup(html, "lxml")
-            soup_voices.append(soup)
-    return soup_voices
+            last = soup.findAll("li", {"class": "b-simple_episode__item"})[-1]
+            last_episode = last["data-episode_id"]
+            last_season = last["data-season_id"]
+            return {"last_season": last_season,
+                    "last_episode": last_episode,
+                    "title": voice["title"],
+                    "voice_id": voice["voice_id"]}
 
+    tasks = []
+    for voice in voices:
+        link_voice = link + f"#t:{voice['voice_id']}-s:1-e:1"
+        task = asyncio.create_task(check(link_voice, voice))
+        tasks.append(task)
 
-async def search_serial(name=None, link=None):
-    if link:
-        async with aiohttp.ClientSession() as session:
-            return await search_by_link(link, session)
-    elif name:
-        return await search_by_name(name)
-
-
-async def search_by_link(link, session):
-    # async with aiohttp.ClientSession() as session:
-    #     cookies = {"1": '1'}
-    #     print("поиск по ссылке:")
-    if True:
-        cookies = {"1": '1'}
-        async with session.get(url=link, cookies=cookies) as r:
-            html = await r.text()
-            soup = BeautifulSoup(html, 'lxml')
-
-            name_serial = soup.find("div", {"class": "b-post__title"}).text
-            print(name_serial)
-            name_orig = soup.find("div", {"class": "b-post__origtitle"})
-            print(name_orig.text) if name_orig else print("рус")
-            name_orig = name_orig.text + "; " if name_orig else ""
-            data_table = soup.find("table", {"class": "b-post__info"})
-            date_release = data_table.findAll("td")[5].text
-            country = data_table.findAll("td")[7].text
-            info = f"{name_orig}{date_release}. {country}."
-
-            voices_data = soup.findAll("li", {"class": "b-translator__item"})
-            voices = []
-            voices_id = []
-            for voice in voices_data:
-                text = voice.find("img")
-                voices_id.append(voice["data-translator_id"])
-                if text:
-                    text = text["title"]
-                    voices.append(voice.text + text)
-                else:
-                    voices.append(voice.text)
-
-            season = 1
-            episode = 1
-            soup_voices = await check_voices(link, voices_id, session)
-            if len(voices_id):
-                soup_voices = [soup]
-            for soup_voice in soup_voices:
-                episode_div = soup_voice.find("div", {"class": "simple-episodes-tabs"})
-                if episode_div:
-                    season_data = episode_div.findAll("ul")
-                    for num, season_ul in enumerate(season_data):
-                        num += 1
-                        if season <= num:
-                            season = num
-                        else:
-                            break
-                        ep_data = season_ul.findAll("li")
-                        for ep, _ in enumerate(ep_data):
-                            ep += 1
-                            if episode <= ep:
-                                episode = ep
-                            else:
-                                break
-
-            return [{"name_serial": name_serial,
-                     "voices": voices,
-                     "info": info,
-                     "season": season,
-                     "episode": episode,
-                     "link": link}]
+    voices = await asyncio.gather(*tasks)
+    if len(voices):
+        return voices
 
 
 async def search_by_name(name):
@@ -170,10 +195,14 @@ async def search_by_name(name):
         async with session.get(url=url, cookies=cookies, params=data) as r:
             html = await r.text()
             soup = BeautifulSoup(html, "lxml")
-            serial_links = soup.findAll("div", {"class": "b-content__inline_item-link"})
+            serial_links = soup.findAll("div", {"class": "b-content__inline_item"})
             serials = []
-            serial_links = serial_links[:9] if len(serial_links) > 9 else serial_links
-            for link in serial_links:
-                serials += await search_by_link(link.a["href"], session)
-            return serials
-
+            for movie in serial_links:
+                if movie.find("span").text == "Сериал":
+                    serials.append(
+                        {
+                            "link": movie.a["href"],
+                            "name_serial": movie.find("div", {"class": "b-content__inline_item-link"}).a.text,
+                            "info": movie.find("div", {"class": "b-content__inline_item-link"}).div.text
+                        })
+            return serials  # [{link, name_serial, info}]
