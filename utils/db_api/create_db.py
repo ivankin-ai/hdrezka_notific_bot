@@ -1,15 +1,11 @@
 from sqlalchemy import Column, Integer, BigInteger, String, Boolean, TIMESTAMP, create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 
 from data.config import db_user, db_pass, host, db_name
 
-Session = sessionmaker()
+
 engine = create_engine(f'postgresql://{db_user}:{db_pass}@{host}/{db_name}', echo=True)
 Base = declarative_base(bind=engine)
-
-Session.configure(bind=engine)
-s = Session()  # type: sqlalchemy.orm.Session
 
 
 class User(Base):
@@ -87,6 +83,4 @@ class Donats(Base):
                 setattr(self, key, value)
 
 
-# Base.metadata.drop_all(engine)
-# Base.metadata.create_all(engine)
-
+Base.metadata.create_all(engine)

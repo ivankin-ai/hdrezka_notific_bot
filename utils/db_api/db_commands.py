@@ -112,15 +112,15 @@ async def compar_voice(sub, new_serials, session, s: sqlalchemy.orm.Session):
     for serial in new_serials:
         if serial["link"] == sub["link"]:
             url = sub["link"] + f"#t:{sub['voice_id']}-s:1-e:1"
-            async with session.get(url=url, cookie={"1": "1"}) as r:
+            async with session.get(url=url, cookies={"1": "1"}) as r:
                 html = await r.text()
                 soup = BeautifulSoup(html, 'lxml')
                 last = soup.findAll("li", {"class": "b-simple_episode__item"})[-1]
                 last_episode = last["data-episode_id"]
                 last_season = last["data-season_id"]
-                if last_season > sub["last_season"] or \
-                        last_episode > sub['last_episode']:
-                    message += f"Обновление в сериале {sub['name_serial']}\nОзвучка: {sub.voice_name}\n" \
+                if int(last_season) > sub["last_season"] or \
+                       int (last_episode) > sub['last_episode']:
+                    message += f"Обновление в сериале {sub['name_serial']}\nОзвучка: {sub['voice_name']}\n" \
                                f"Сезон: {last_season}, серия: {last_episode}.\n\n"
                     sub['last_episode'] = last_episode
                     sub['last_season'] = last_season

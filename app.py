@@ -4,15 +4,13 @@ from utils.db_api.db_commands import update_serials, check_subs
 from utils.notify_admins import on_startup_notify
 from utils.parser.rezka_parser import check_site
 from utils.set_bot_commands import set_default_commands
-import middlewares, handlers
+import handlers
 
 
 # db = SQLighter('Serials.db')
 
 
 async def on_startup(dispatcher):
-    # # Создаёт БД
-    # await create_db()
 
     # Устанавливаем дефолтные команды
     await set_default_commands(dispatcher)
@@ -26,14 +24,12 @@ async def check_homepage():
     # Ежеминутная проверка сайта на наличие новых обновлений
     while True:
         serials = check_site()
-        print("На сайте найдено " + str(len(serials)) + " сериалов")
         new_serials = update_serials(serials)
-        print('новые сериалы', new_serials)
         if new_serials:
             data = await check_subs(new_serials)
             for user_id, message in data.items():
                 await dp.bot.send_message(user_id, message)
-        await asyncio.sleep(60)
+        await asyncio.sleep(5*60)
 
 
 if __name__ == '__main__':

@@ -216,3 +216,11 @@ async def delete_all_subs(call: CallbackQuery):
 async def delete_one_sub(call: CallbackQuery, callback_data: dict):
     await del_sub(int(callback_data["sub_id"]))
     await show_subs(call)
+
+
+
+@dp.message_handler(state=None)
+async def echo(message: types.Message):
+    await StateMenu.search.set()
+    state = dp.get_current().current_state()
+    await show_search(message, state)
