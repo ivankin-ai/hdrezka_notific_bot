@@ -88,5 +88,5 @@ class Donats(Base):
 
 
 # Base.metadata.drop_all(engine)
-# Base.metadata.create_all(engine)
+Base.metadata.create_all(engine)
 

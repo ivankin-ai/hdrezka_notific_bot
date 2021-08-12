@@ -1,0 +1,25 @@
+version: '3'
+
+services:
+  rezka_db:
+    image: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    restart: always
+    environment:
+      POSTGRES_USER: rezka_bot
+      POSTGRES_PASSWORD: jgn3KLndokM938kdl3Kjmnwz23edfdsL
+      POSTGRES_DB: hd_rezka
+    ports:
+      - ${POSTGRES_PORT:-5432}:5432
+
+  rezka_app:
+    depends_on:
+      - rezka_db
+    build:
+      dockerfile: Dockerfile
+      context: .
+    restart: always
+
+volumes:
+  db-data:
